@@ -214,30 +214,36 @@ class ShipManagerAI:
             return None
         
         try:
-            islandX = island.getX()
-            islandY = island.getY()
-            
+            # Island world pose is carried by setIslandTransform, not NodePath setX/setY.
+            islandTransform = island.getIslandTransform()
+            islandX, islandY = islandTransform[0], islandTransform[1]
+            islandH = islandTransform[3] if len(islandTransform) > 3 else 0.0
+
             # Get island sphere radius (use outer sphere for patrol distance)
             sphereRadii = getattr(island, 'sphereRadii', None)
             if sphereRadii and len(sphereRadii) > 2:
                 patrolRadius = sphereRadii[2] + 500  # Just outside outer sphere
             else:
                 patrolRadius = 3000  # Default patrol distance
-            
-            # Random angle around island
+
+            # Random angle around island in island-local space, then rotate by heading.
             import math
-            angle = random.uniform(0, 2 * math.pi)
-            
-            sx = islandX + patrolRadius * math.cos(angle)
-            sy = islandY + patrolRadius * math.sin(angle)
-            
+            localAngle = random.uniform(0, 2 * math.pi)
+            localX = patrolRadius * math.cos(localAngle)
+            localY = patrolRadius * math.sin(localAngle)
+            headingRad = math.radians(islandH)
+            cosH = math.cos(headingRad)
+            sinH = math.sin(headingRad)
+            sx = islandX + localX * cosH - localY * sinH
+            sy = islandY + localX * sinH + localY * cosH
+
             # Validate and clamp
             if not self._isValidSpawnPosition(sx, sy):
                 sx, sy = self._clampToGridBounds(sx, sy)
-            
+
             return sx, sy
-            
-        except Exception as e:
+
+        except Exception:
             return None
 
     # =========================================================================

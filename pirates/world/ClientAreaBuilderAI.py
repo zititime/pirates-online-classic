@@ -150,12 +150,28 @@ class ClientAreaBuilderAI(DirectObject):
         island.setScale(objectData.get('Scale', (1, 1, 1)))
         island.setUndockable(objectData.get('Undockable', False))
 
+        portCollisionSpheres = []
         if 'Objects' in islandWorldData:
             for obj in list(islandWorldData['Objects'].values()):
-                if obj['Type'] == 'LOD Sphere':
+                objType = obj.get('Type')
+                if objType == 'LOD Sphere':
                     sphereCenter = obj['Pos']
                     island.setZoneSphereSize(*obj['Radi'])
                     island.setZoneSphereCenter(sphereCenter[0], sphereCenter[1])
+                elif objType == ObjectList.PORT_COLLISION or objType == 'Port Collision Sphere':
+                    # World data stores port blockers as scaled spheres in island-local space.
+                    pos = obj.get('Pos', (0, 0, 0))
+                    scale = obj.get('Scale', (1, 1, 1))
+                    radius = scale[0] if scale else 0
+                    if radius > 0:
+                        portCollisionSpheres.append({
+                            'pos': (pos[0], pos[1], pos[2] if len(pos) > 2 else 0),
+                            'radius': radius,
+                            'name': obj.get('Name', ''),
+                        })
+
+        if portCollisionSpheres:
+            island.setPortCollisionSpheres(portCollisionSpheres)
 
         self.notify.debug('Generated island %s (%s)' % (island.getName(), objKey))
         self.parent.generateChildWithRequired(island, PiratesGlobals.IslandAvailableZoneStart)

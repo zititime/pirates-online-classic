@@ -1421,50 +1421,73 @@ class GameFSMShipAI(FSM.FSM):
         
         return nearbyShips
 
+    def _localIslandPointToOcean(self, island, localX, localY):
+        """
+        Convert an island-local point into ocean/world space using the same
+        islandTransform basis as ship deploy spheres (pos + heading).
+        """
+        islandTransform = island.getIslandTransform()
+        ix, iy = islandTransform[0], islandTransform[1]
+        ih = islandTransform[3] if len(islandTransform) > 3 else 0.0
+        angle = math.radians(ih)
+        cosH = math.cos(angle)
+        sinH = math.sin(angle)
+        worldX = ix + localX * cosH - localY * sinH
+        worldY = iy + localX * sinH + localY * cosH
+        return worldX, worldY
+
     def _getIslandCollisionSpheres(self):
         """
         Get all island collision spheres from the world.
-        Returns list of (centerX, centerY, radius) tuples.
+        Returns list of (centerX, centerY, radius) tuples in ocean space.
+
+        Sphere centers are authored in island-local space (zone center / port
+        spheres), then transformed by island pos+heading just like deploy.
         """
         self._initWorldRefs()
         collisionSpheres = []
-        
+
         try:
             if self.world and hasattr(self.world, 'builder'):
                 islands = self.world.builder.getIslands()
                 for island in islands:
                     if not island:
                         continue
-                    
-                    # Get island position from transform
-                    islandTransform = island.getIslandTransform()
-                    islandX, islandY = islandTransform[0], islandTransform[1]
-                    
-                    # Get port collision spheres
-                    portSpheres = island.getPortCollisionSpheres()
-                    if portSpheres:
-                        for sphere in portSpheres:
-                            # PortCollisionSphere has radius and pos (x, y, z)
+
+                    # Port collision spheres (island-local pos + scale radius)
+                    portSpheres = island.getPortCollisionSpheres() or []
+                    for sphere in portSpheres:
+                        if isinstance(sphere, dict):
                             radius = sphere.get('radius', 0)
                             pos = sphere.get('pos', (0, 0, 0))
-                            # Add island offset to sphere position
-                            centerX = islandX + pos[0]
-                            centerY = islandY + pos[1]
-                            collisionSpheres.append((centerX, centerY, radius))
-                    
-                    # Also add the island's zone sphere as a collision area
-                    # The inner sphere radius (sphereRadii[0]) is the docking area
-                    sphereCenter = island.sphereCenter
-                    sphereRadii = island.sphereRadii
-                    if sphereRadii and len(sphereRadii) > 0:
-                        # Use inner radius as collision zone (ships shouldn't sail through island)
-                        innerRadius = sphereRadii[0]
-                        centerX = islandX + sphereCenter[0]
-                        centerY = islandY + sphereCenter[1]
-                        collisionSpheres.append((centerX, centerY, innerRadius))
-        except Exception as e:
+                        elif isinstance(sphere, (list, tuple)) and len(sphere) >= 2:
+                            # Defensive support for alternate packed formats.
+                            pos = sphere[0]
+                            radius = sphere[1]
+                        else:
+                            continue
+
+                        if not radius:
+                            continue
+
+                        centerX, centerY = self._localIslandPointToOcean(
+                            island, pos[0], pos[1])
+                        collisionSpheres.append((centerX, centerY, float(radius)))
+
+                    # Island zone sphere: ships must not sail through island land.
+                    # Use the inner deploy/zone radius (sphereRadii[0]), same basis
+                    # as DistributedShipDeployer minRadius.
+                    sphereCenter = getattr(island, 'sphereCenter', [0, 0]) or [0, 0]
+                    sphereRadii = getattr(island, 'sphereRadii', None)
+                    if sphereRadii and len(sphereRadii) > 0 and sphereRadii[0] > 0:
+                        localX = sphereCenter[0] if len(sphereCenter) > 0 else 0.0
+                        localY = sphereCenter[1] if len(sphereCenter) > 1 else 0.0
+                        centerX, centerY = self._localIslandPointToOcean(
+                            island, localX, localY)
+                        collisionSpheres.append((centerX, centerY, float(sphereRadii[0])))
+        except Exception:
             pass
-        
+
         return collisionSpheres
 
     # =========================================================================
