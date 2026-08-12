@@ -84,6 +84,9 @@ class BlackPearlShipAI(DistributedShipAI):
 
     def takeDamage(self, damage, attackerId=0):
         """Handle damage to the Black Pearl"""
+        if self.hasSpawnBuff():
+            return self.hp
+
         self.notify.debug('Black Pearl taking %d damage from %d' % (damage, attackerId))
 
         newHp = max(0, self.hp - damage)

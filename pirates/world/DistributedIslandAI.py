@@ -82,6 +82,9 @@ class DistributedIslandAI(DistributedCartesianGridAI, DistributedGameAreaAI, Tea
             self.parentWorld = world
 
     def setIslandTransform(self, x, y, z, h):
+        # Island world pose is carried by setIslandTransform (int32/10),
+        # not DistributedNode setX/setY/setZ (int16/10), which overflow
+        # for real island coordinates.
         self.islandTransform = [x, y, z, h]
 
     def d_setIslandTransform(self, x, y, z, h):

@@ -2,6 +2,7 @@ from direct.directnotify import DirectNotifyGlobal
 from direct.distributed.ClockDelta import *
 
 from pirates.battle.Teamable import Teamable
+from pirates.battle import WeaponGlobals
 from pirates.ship import ShipGlobals
 from pirates.piratesbase import PiratesGlobals
 from pirates.world.DistributedOceanGridAI import DistributedOceanGridAI
@@ -60,6 +61,8 @@ class DistributedShipAI(DistributedMovingObjectAI, DistributedCharterableObjectA
         self.clientControllerDoId = 0
         self.captainId = 0
         self.deployState = 0
+        self.skillEffects = []
+        self._skillEffectTasks = {}
 
         self.cabin = None
         self.bowSprit = None
@@ -69,6 +72,101 @@ class DistributedShipAI(DistributedMovingObjectAI, DistributedCharterableObjectA
         self.cannons = []
         self.broadside = None
         self.steeringWheel = None
+
+    def setSkillEffects(self, skillEffects):
+        self.skillEffects = skillEffects
+
+    def d_setSkillEffects(self, skillEffects):
+        self.sendUpdate('setSkillEffects', [skillEffects])
+
+    def b_setSkillEffects(self, skillEffects):
+        self.setSkillEffects(skillEffects)
+        self.d_setSkillEffects(skillEffects)
+
+    def hasSkillEffect(self, effectId):
+        for skillEffect in self.skillEffects:
+            if skillEffect[0] == effectId:
+                return True
+
+        return False
+
+    def hasSpawnBuff(self):
+        return WeaponGlobals.C_SPAWN in self.getSkillEffects()
+
+    def getSkillEffects(self):
+        buffIds = []
+        for skillEffect in self.skillEffects:
+            buffId = skillEffect[0]
+            if buffId not in buffIds:
+                buffIds.append(buffId)
+
+        return buffIds
+
+    def addSkillEffect(self, effectId, duration, attackerId):
+        timestamp = globalClockDelta.getRealNetworkTime(bits=16)
+        for skillEffect in self.skillEffects:
+            if skillEffect[0] == effectId and skillEffect[3] == attackerId:
+                skillEffect[1] = duration
+                skillEffect[2] = timestamp
+                break
+        else:
+            self.skillEffects.append([
+                effectId,
+                duration,
+                timestamp,
+                attackerId])
+
+        self.d_setSkillEffects(self.skillEffects)
+
+        if duration > 0:
+            taskName = self.uniqueName('ship-skill-effect-%s-%s' % (effectId, attackerId))
+            if taskName in self._skillEffectTasks:
+                taskMgr.remove(taskName)
+
+            self._skillEffectTasks[taskName] = True
+            # appendTask=True => callback(effectId, attackerId, task)
+            # Without it, doMethodLater replaces the task arg entirely with extraArgs.
+            taskMgr.doMethodLater(
+                duration,
+                self._expireSkillEffectTask,
+                taskName,
+                extraArgs=[effectId, attackerId],
+                appendTask=True)
+
+    def _expireSkillEffectTask(self, effectId, attackerId, task):
+        for skillEffect in list(self.skillEffects):
+            if skillEffect[0] == effectId and skillEffect[3] == attackerId:
+                self.skillEffects.remove(skillEffect)
+                break
+
+        self.d_setSkillEffects(self.skillEffects)
+        self._skillEffectTasks.pop(task.name, None)
+        return task.done
+
+    def removeSkillEffect(self, effectId, attackerId=0):
+        if attackerId == 0:
+            for skillEffect in list(self.skillEffects):
+                if skillEffect[0] == effectId:
+                    self.skillEffects.remove(skillEffect)
+                    break
+        else:
+            for skillEffect in list(self.skillEffects):
+                if skillEffect[0] == effectId and skillEffect[3] == attackerId:
+                    self.skillEffects.remove(skillEffect)
+                    break
+
+        self.d_setSkillEffects(self.skillEffects)
+
+    def clearSkillEffects(self):
+        self.skillEffects = []
+        self.d_setSkillEffects(self.skillEffects)
+
+    def delete(self):
+        for taskName in list(self._skillEffectTasks.keys()):
+            taskMgr.remove(taskName)
+
+        self._skillEffectTasks = {}
+        DistributedMovingObjectAI.delete(self)
 
     def sendCurrentPosition(self):
         x, y, z = self.getPos()

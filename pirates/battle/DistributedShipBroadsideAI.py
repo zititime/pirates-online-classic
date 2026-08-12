@@ -248,6 +248,9 @@ class DistributedShipBroadsideAI(DistributedWeaponAI):
                 
                 totalDamage = int(totalDamage)
                 
+                if getattr(targetShip, 'hasSpawnBuff', lambda: False)():
+                    return task.done
+
                 # Apply damage to target ship
                 # Use takeDamage if available (NPCShipAI), otherwise set HP directly
                 if hasattr(targetShip, 'takeDamage'):

@@ -345,9 +345,24 @@ class DistributedShipBroadside(DistributedWeapon, DistributedShippart):
 
         ammoSkillId = self.ammoType
         if cannonList and cannonConfig:
-            cannonList[index].playFire()
-            cballSpawnPoint = cannonList[index].locator
-            cballSpawnPoint.setP(render, 0)
+            if index >= len(cannonList) or not cannonList[index]:
+                return
+
+            cannon = cannonList[index]
+            if not cannon.isEnabled():
+                return
+
+            cannon.playFire()
+            cballSpawnPoint = getattr(cannon, 'locator', None)
+            if cballSpawnPoint is None or cballSpawnPoint.isEmpty():
+                return
+
+            try:
+                cballSpawnPoint.setP(render, 0)
+            except AssertionError:
+                self.notify.warning('Broadside spawn locator lost scene-graph parent')
+                return
+
             self.playFireEffect(cballSpawnPoint, ammoSkillId)
             if not WeaponGlobals.isProjectileSkill(skillId, ammoSkillId):
                 return
@@ -421,31 +436,80 @@ class DistributedShipBroadside(DistributedWeapon, DistributedShippart):
         s = Parallel(Sequence(Wait(0.1), Func(base.cTrav.addCollider, collNode, ammo.collHandler)), Sequence(pi, Func(ammo.destroy), Func(base.cTrav.removeCollider, collNode)))
         ammo.setIval(s, start = True)
 
+    def _getFireEffectParent(self):
+        """
+        Prefer the ship model root for muzzle VFX, matching Cannon.playFireEffect.
+        Fall back to the broadside effectNode, then render.
+        """
+        if self.ship and getattr(self.ship, 'modelGeom', None):
+            modelGeom = self.ship.modelGeom
+            if modelGeom and not modelGeom.isEmpty():
+                return modelGeom
+
+        if self.ship and getattr(self.ship, 'root', None):
+            root = self.ship.root
+            if root and not root.isEmpty():
+                return root
+
+        if self.effectNode and not self.effectNode.isEmpty():
+            return self.effectNode
+
+        return render
+
+    def _safeReparentEffect(self, effect, parent):
+        """Detach and reparent a pooled effect without crashing the ival loop."""
+        if effect is None or parent is None or parent.isEmpty():
+            return False
+
+        try:
+            if not effect.isEmpty():
+                effect.detachNode()
+            particleDummy = getattr(effect, 'particleDummy', None)
+            if particleDummy is not None and not particleDummy.isEmpty():
+                particleDummy.detachNode()
+
+            effect.reparentTo(parent)
+            if particleDummy is not None and not particleDummy.isEmpty():
+                particleDummy.reparentTo(parent)
+            return True
+        except AssertionError:
+            self.notify.warning('Failed to reparent broadside effect %s under %s' % (
+                effect, parent))
+            try:
+                if effect and not effect.isEmpty():
+                    effect.detachNode()
+                particleDummy = getattr(effect, 'particleDummy', None)
+                if particleDummy is not None and not particleDummy.isEmpty():
+                    particleDummy.detachNode()
+            except Exception:
+                pass
+            return False
+
     def playFireEffect(self, spawnNode, ammoSkillId):
-        # Safety check - effectNode may be None if broadside was disabled
-        if not self.effectNode or self.effectNode.isEmpty():
+        if spawnNode is None or spawnNode.isEmpty():
             return
-        
+
+        effectParent = self._getFireEffectParent()
+        if effectParent is None or effectParent.isEmpty():
+            return
+
         if self.localAvatarUsingWeapon:
             boomSfx = random.choice(self.localFireSfx)
         else:
             boomSfx = random.choice(self.distFireSfx)
         base.playSfx(boomSfx, node = spawnNode, cutoff = 3000)
+
         if base.options.getSpecialEffectsSetting() >= base.options.SpecialEffectsMedium:
             cannonSmokeEffect = CannonBlastSmoke.getEffect()
-            if cannonSmokeEffect:
-                cannonSmokeEffect.detachNode()
-                cannonSmokeEffect.reparentTo(self.effectNode)
-                cannonSmokeEffect.particleDummy.reparentTo(self.effectNode)
+            if cannonSmokeEffect and self._safeReparentEffect(cannonSmokeEffect, effectParent):
                 cannonSmokeEffect.setPosHpr(spawnNode, 0, -8, 0, 180, 0, 0)
-                cannonSmokeEffect.particleDummy.setHpr(spawnNode, 180, 0, 0)
+                if getattr(cannonSmokeEffect, 'particleDummy', None):
+                    cannonSmokeEffect.particleDummy.setHpr(spawnNode, 180, 0, 0)
                 cannonSmokeEffect.play()
 
         if base.options.getSpecialEffectsSetting() >= base.options.SpecialEffectsMedium:
             flashEffect = MuzzleFlash.getEffect()
-            if flashEffect:
-                flashEffect.detachNode()
-                flashEffect.reparentTo(self.effectNode)
+            if flashEffect and self._safeReparentEffect(flashEffect, effectParent):
                 flashEffect.flash.setScale(30)
                 flashEffect.setPos(spawnNode, 0, 0, 0)
                 flashEffect.startCol = Vec4(1, 1, 1, 1)
@@ -454,35 +518,26 @@ class DistributedShipBroadside(DistributedWeapon, DistributedShippart):
 
         if base.options.getSpecialEffectsSetting() >= base.options.SpecialEffectsHigh:
             explosionEffect = ExplosionFlip.getEffect()
-            if explosionEffect:
-                explosionEffect.detachNode()
-                explosionEffect.reparentTo(self.effectNode)
-                pos = Vec3(0, -6, 0)
-                explosionEffect.setPos(spawnNode, pos)
+            if explosionEffect and self._safeReparentEffect(explosionEffect, effectParent):
+                explosionEffect.setPos(spawnNode, Vec3(0, -6, 0))
                 explosionEffect.setScale(0.6)
                 explosionEffect.play()
 
         if base.options.getSpecialEffectsSetting() >= base.options.SpecialEffectsLow:
             muzzleFlameEffect = MuzzleFlame.getEffect()
-            if muzzleFlameEffect:
-                # Detach from any previous parent before reparenting
-                muzzleFlameEffect.detachNode()
-                if hasattr(muzzleFlameEffect, 'particleDummy') and muzzleFlameEffect.particleDummy:
-                    muzzleFlameEffect.particleDummy.detachNode()
-                muzzleFlameEffect.reparentTo(self.effectNode)
-                muzzleFlameEffect.particleDummy.reparentTo(self.effectNode)
+            if muzzleFlameEffect and self._safeReparentEffect(muzzleFlameEffect, effectParent):
+                # Match Cannon.playFireEffect detach/reparent order and parenting.
                 muzzleFlameEffect.flash.setScale(100)
                 muzzleFlameEffect.startCol = Vec4(1, 1, 1, 1)
                 muzzleFlameEffect.setPosHpr(spawnNode, 0, -8, 0, 180, 0, 0)
-                muzzleFlameEffect.particleDummy.setHpr(spawnNode, 180, 0, 0)
+                if getattr(muzzleFlameEffect, 'particleDummy', None):
+                    muzzleFlameEffect.particleDummy.setHpr(spawnNode, 180, 0, 0)
                 muzzleFlameEffect.play()
 
         if base.options.getSpecialEffectsSetting() >= base.options.SpecialEffectsLow:
             if ammoSkillId == InventoryType.CannonGrapeShot:
                 effect = GrapeshotEffect.getEffect()
-                if effect:
-                    effect.detachNode()
-                    effect.reparentTo(self.effectNode)
+                if effect and self._safeReparentEffect(effect, effectParent):
                     effect.setPosHpr(spawnNode, 0, 0, 0, -90, 0, 0)
                     effect.play()
 

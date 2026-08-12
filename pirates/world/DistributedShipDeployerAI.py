@@ -8,7 +8,10 @@ from direct.directnotify import DirectNotifyGlobal
 from direct.fsm.FSM import FSM
 from direct.distributed.ClockDelta import *
 
+from pirates.battle import WeaponGlobals
 from pirates.piratesbase import PiratesGlobals
+
+SPAWN_PROTECTION_DURATION = 8.0
 
 
 class ShipDeployerOperationFSM(FSM):
@@ -58,8 +61,11 @@ class DeployShipFSM(ShipDeployerOperationFSM):
         self.islandParentObj = self.island.getParentObj()
         self.oceanGrid = self.islandParentObj.oceanGrid
 
+        # Match the client deployer: spheres are local to the deployer node,
+        # which is parented under the island. Convert that local point into
+        # ocean-grid coordinates only when we actually place the ship.
         deployerSphere = self.shipDeployer.getRandomSphere()
-        self.spawnPoint = self.getSpawnPointFromSphere(*deployerSphere)
+        self.spawnPoint = self.shipDeployer.getOceanSpawnPointFromSphere(*deployerSphere)
         self.zoneId = self.oceanGrid.getZoneFromXYZ(self.spawnPoint)
 
         ship = self.air.doId2do.get(self.shipId)
@@ -69,12 +75,6 @@ class DeployShipFSM(ShipDeployerOperationFSM):
         else:
             ship.b_setLocation(self.oceanGrid.doId, self.zoneId)
             self.shipArrivedCallback(ship)
-
-    def getSpawnPointFromSphere(self, sx, sy, sz):
-        radius = self.shipDeployer.getSpacing() / 2.0
-        x = random.uniform(sx - radius, sx + radius)
-        y = random.uniform(sy - radius, sy + radius)
-        return Point3(x, y, sz)
 
     def shipArrivedCallback(self, ship):
         self.ship = ship
@@ -126,6 +126,11 @@ class DeployShipFSM(ShipDeployerOperationFSM):
         # the ship has been successfully deployed, mark it as deployed,
         # this will allow anyone who wants to join the ship to be able to do so...
         self.ship.setDeploy(True)
+
+        # Newly deployed ships spawn around the island's deploy sphere and are
+        # invulnerable for a short window so they cannot be damaged while the
+        # deploy effect is active.
+        self.ship.addSkillEffect(WeaponGlobals.C_SPAWN, SPAWN_PROTECTION_DURATION, self.ship.doId)
 
         # add the ship to the ship manager's list of `deployed` ships,
         # the ship will be removed by the PlayerShipAI class when delete is called.
@@ -214,34 +219,67 @@ class DistributedShipDeployerAI(DistributedNodeAI):
         self.createDeploySpheres()
 
     def createDeploySpheres(self):
+        """
+        Mirror DistributedShipDeployer.createDeploySpheres on the client.
+
+        Sphere centers are kept in deployer-local space (island-relative),
+        matching the client collision spheres attached under ShipDeployer.
+        Ocean-space conversion is done later via islandTransform math because
+        AI islands cannot store world coords in DistributedNode setX/setY
+        (int16/10 overflows; real pose is setIslandTransform int32/10).
+        """
+        self.deploySpheres = []
+        if self.spacing <= 0 or self.minRadius < 0:
+            return
+
         deployRingRadius = self.minRadius + self.spacing / 2.0
         C = 2 * math.pi * deployRingRadius
-        numSpheres = int(C / self.spacing)
+        numSpheres = max(1, int(C / self.spacing))
         stepAngle = 360.0 / numSpheres
 
         def getSpherePos(sphereId):
             h = sphereId * stepAngle + 90.0 + self.heading
             angle = h * math.pi / 180.0
-            pos = Point3(math.cos(angle), math.sin(angle), 0) * deployRingRadius
-            return pos
+            return Point3(math.cos(angle), math.sin(angle), 0) * deployRingRadius
 
         for x in range(numSpheres):
-            ax, ay, az = getSpherePos(x)
-            bx, by = self.island.sphereCenter
-            cx, cy = bx + ax, by + ay
-            #cSphere = CollisionSphere(pos[0], pos[1], 0, self.spacing / 2.0)
-            #cSphere.setTangible(0)
-            #cSphereNode = CollisionNode(self.uniqueName('ShipDeploySphere'))
-            #cSphereNode.addSolid(cSphere)
-            #sphere = self.attachNewNode(cSphereNode)
-            #sphere.setTag('deploySphereId', `x`)
-            self.deploySpheres.append((cx, cy, az))
+            pos = getSpherePos(x)
+            self.deploySpheres.append((pos[0], pos[1], pos[2]))
 
     def getSphere(self, index):
         return self.deploySpheres[index]
 
     def getRandomSphere(self):
+        if not self.deploySpheres:
+            self.createDeploySpheres()
+        if not self.deploySpheres:
+            return (self.minRadius + self.spacing / 2.0, 0.0, 0.0)
         return random.choice(self.deploySpheres)
+
+    def localToOceanPoint(self, localX, localY, localZ=0.0):
+        """
+        Convert a client-style deployer-local point into ocean/world space
+        using the island's authored transform (pos + heading).
+        """
+        ix, iy, iz, ih = self.island.getIslandTransform()
+        angle = math.radians(ih)
+        cosH = math.cos(angle)
+        sinH = math.sin(angle)
+        # Same basis as parenting a local point under an island NodePath
+        # with setPos(ix,iy,iz) + setH(ih).
+        worldX = ix + localX * cosH - localY * sinH
+        worldY = iy + localX * sinH + localY * cosH
+        return Point3(worldX, worldY, iz + localZ)
+
+    def getOceanSpawnPointFromSphere(self, sx, sy, sz):
+        """
+        Convert a client-style local deploy-sphere center into an ocean-grid
+        spawn point, including a small random offset inside the sphere radius.
+        """
+        radius = self.getSpacing() / 2.0
+        localX = random.uniform(sx - radius, sx + radius)
+        localY = random.uniform(sy - radius, sy + radius)
+        return self.localToOceanPoint(localX, localY, sz)
 
     def runShipDeployerFSM(self, fsmtype, avatar, *args, **kwargs):
         if avatar.doId in self.avatar2fsm:

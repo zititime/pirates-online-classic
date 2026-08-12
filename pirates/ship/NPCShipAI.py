@@ -73,6 +73,9 @@ class NPCShipAI(DistributedShipAI):
             attackerDoId: DoId of attacking ship (for threat tracking)
             applyModifiers: Whether to apply NPC damage input modifier
         """
+        if self.hasSpawnBuff():
+            return self.hp
+
         # Apply NPC damage input modifier if requested
         if applyModifiers:
             damage = damage * self.getDamageInputModifier()
